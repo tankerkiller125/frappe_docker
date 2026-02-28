@@ -3,47 +3,39 @@ name: Build
 on:
   workflow_call:
     inputs:
-      repo:
+      frappe_branch:
         required: true
         type: string
-        description: "'erpnext' or 'frappe'"
-      version:
-        required: true
-        type: string
-        description: "Major version, git tags should match 'v{version}.*'; or 'develop'"
-      push:
-        required: true
-        type: boolean
+        description: "Frappe branch, e.g. 'version-16' or 'develop'"
       python_version:
         required: true
         type: string
-        description: Python Version
+        description: Python version
       node_version:
         required: true
         type: string
-        description: NodeJS Version
-    secrets:
-      DOCKERHUB_USERNAME:
+        description: Node.js version
+      push:
         required: true
-      DOCKERHUB_TOKEN:
-        required: true
+        type: boolean
+        description: Whether to push the image to the registry
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    services:
-      registry:
-        image: docker.io/registry:2
-        ports:
-          - 5000:5000
-    strategy:
-      matrix:
-        arch: [amd64, arm64]
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
@@ -53,49 +45,49 @@ jobs:
 
       - name: Setup Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
-          platforms: linux/${{ matrix.arch }}
 
-      - name: Get latest versions
-        run: python3 ./.github/scripts/get_latest_tags.py --repo ${{ inputs.repo }} --version ${{ inputs.version }}
-
-      - name: Set build args
-        run: |
-          echo "PYTHON_VERSION=${{ inputs.python_version }}" >> "$GITHUB_ENV"
-          echo "NODE_VERSION=${{ inputs.node_version }}" >> "$GITHUB_ENV"
-
-      - name: Build
-        uses: docker/bake-action@v6.10.0
-        with:
-          source: .
-          push: true
-        env:
-          REGISTRY_USER: localhost:5000/frappe
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.10"
-
-      - name: Install dependencies
-        run: |
-          python -m venv venv
-          venv/bin/pip install -r requirements-test.txt
-
-      - name: Test
-        run: venv/bin/pytest --color=yes
-
-      - name: Login
-        if: ${{ inputs.push }}
+      - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push
-        if: ${{ inputs.push }}
-        uses: docker/bake-action@v6.10.0
+      - name: Generate apps.json base64
+        run: |
+          test -f apps.json || (echo "apps.json not found" && exit 1)
+          echo "APPS_JSON_BASE64=$(base64 -w 0 apps.json)" >> "$GITHUB_ENV"
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          push: true
-          set: "*.platform=linux/amd64,linux/arm64"
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ inputs.frappe_branch }}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/custom/Containerfile
+          push: ${{ inputs.push }}
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            FRAPPE_PATH=https://github.com/frappe/frappe
+            FRAPPE_BRANCH=${{ inputs.frappe_branch }}
+            APPS_JSON_BASE64=${{ env.APPS_JSON_BASE64 }}
+            PYTHON_VERSION=${{ inputs.python_version }}
+            NODE_VERSION=${{ inputs.node_version }}
+
+      - name: Generate artifact attestation
+        if: ${{ inputs.push }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

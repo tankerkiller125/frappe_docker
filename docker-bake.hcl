@@ -2,7 +2,7 @@
 # Reference: https://github.com/docker/buildx/blob/master/docs/reference/buildx_bake.md
 
 variable "REGISTRY_USER" {
-    default = "frappe"
+    default = "ghcr.io/tankerkiller125"
 }
 
 variable PYTHON_VERSION {
@@ -45,8 +45,8 @@ target "bench" {
     context = "images/bench"
     target = "bench"
     tags = [
-        "frappe/bench:${LATEST_BENCH_RELEASE}",
-        "frappe/bench:latest",
+        "${REGISTRY_USER}/bench:${LATEST_BENCH_RELEASE}",
+        "${REGISTRY_USER}/bench:latest",
     ]
 }
 
